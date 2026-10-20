@@ -23,7 +23,7 @@ const RES_NAMES = ["16 bit", "17 bit", "18 bit", "19 bit"]
 
 let gainIdx = 7        // 1x, the sensor default
 let resIdx = 0         // 16 bit
-let filterIdx = 6      // matches the extension defaults (filter 0 + OSR 0 is a prohibited mode)
+let filterIdx = 6      // matches the extension defaults
 let osrIdx = 2
 let settingsChanged = false
 let calibrateRequested = CALIBRATE_ON_START
@@ -41,6 +41,10 @@ function applySettings() {
     mlx90393.setResolution(resIdx)
     mlx90393.setFilter(filterIdx)
     mlx90393.setOversampling(osrIdx)
+    // The extension raises combinations the sensor doesn't permit (filter 0 with OSR 0 or 1,
+    // filter 1 with OSR 0), so read back what is really in use.
+    filterIdx = mlx90393.digitalFilter()
+    osrIdx = mlx90393.oversamplingSetting()
     serial.writeLine("# gain " + GAIN_NAMES[gainIdx]
         + " | " + RES_NAMES[resIdx]
         + " | filter " + filterIdx

@@ -63,10 +63,10 @@ namespace mlx90393 {
     let addr = 0x0C
     let gain = 7
     let res = 0
-    // The chip's reset values (DIG_FILT = 0, OSR = 0) are a prohibited mode when
-    // HALLCONF = 0xC (datasheet Table 1): the conversion is too short for the hall-plate
-    // spinning to cancel the offset, which gives a large baseline error.
-    // Defaults here match the ESPHome driver (Adafruit uses filter 7 / OSR 3).
+    // The chip's reset values (DIG_FILT = 0, OSR = 0) are a prohibited combination when
+    // HALLCONF = 0xC (datasheet section 16.2.5, Table 19) and gave a baseline error of
+    // hundreds of µT in testing. Defaults here match the ESPHome driver
+    // (Adafruit's driver uses filter 7 / OSR 3).
     let filt = 6
     let osr = 2
 
@@ -116,15 +116,31 @@ namespace mlx90393 {
         updateReg(0, 0x007F, (gain << 4) | 0x0C)
     }
 
+    // With HALLCONF = 0xC the datasheet (section 16.2.5, Table 19) does not permit
+    // (filter 0, OSR 0), (filter 0, OSR 1) or (filter 1, OSR 0). Rather than program
+    // them, raise the filter to the nearest permitted combination.
+    function legaliseFilterSettings() {
+        if (osr == 0 && filt < 2) {
+            filt = 2
+        } else if (osr == 1 && filt < 1) {
+            filt = 1
+        }
+    }
+
     function applyReg2() {
+        legaliseFilterSettings()
         // reg 0x02: bits 10:9 RES_Z, 8:7 RES_Y, 6:5 RES_X, 4:2 DIG_FILT, 1:0 OSR
+        // (bits 12:11 OSR2 and the rest are left as they are)
         updateReg(2, 0x07FF, (res << 9) | (res << 7) | (res << 5) | (filt << 2) | osr)
     }
 
-    // Worst-case conversion time for T+X+Y+Z, in ms (with margin)
+    // Time to wait after SM (T+X+Y+Z) in ms, from the datasheet timing formulas:
+    // TSTBY + TACTIVE + 3 * TCONVM + TCONVT + TCONV_END, using the maximum startup times
+    // and a margin for the +-10% oscillator tolerance.
     function conversionMs(): number {
-        let perChannelUs = 67 + 64 * (1 << osr) * (2 + (1 << filt))
-        return Math.ceil(perChannelUs * 4 * 1.2 / 1000) + 5
+        let perAxisUs = 67 + 64 * (1 << osr) * (2 + (1 << filt))   // TCONVM
+        let totalUs = 264 + 432 + 3 * perAxisUs + 259 + 120        // TCONVT = 259 us at OSR2 = 0
+        return Math.ceil(totalUs * 1.15 / 1000) + 2
     }
 
     function decodeAxis(b: Buffer, offset: number): number {
@@ -179,7 +195,16 @@ namespace mlx90393 {
         basic.pause(conversionMs())
         let b = send([0x4F], 9)   // RM: read measurement
         lastStatus = b.getUint8(0)
-        if (lastStatus & 0x10) {  // error bit
+        // The error bit is also set when data is read before the conversion has finished
+        // (datasheet section 15.2), so allow a few short retries before giving up.
+        let retries = 0
+        while ((lastStatus & 0x10) && retries < 3) {
+            basic.pause(5)
+            b = send([0x4F], 9)
+            lastStatus = b.getUint8(0)
+            retries += 1
+        }
+        if (lastStatus & 0x10) {  // still an error
             measurementOk = false
             return
         }
@@ -373,7 +398,9 @@ namespace mlx90393 {
     // ---------- settings ----------
 
     /**
-     * Set the sensor gain. Higher gain = finer resolution but smaller range.
+     * Set the sensor gain. The labels follow the Melexis datasheet: 1x (default) is the most
+     * sensitive setting (finest steps, narrowest range) and 5x is the least sensitive
+     * (coarsest steps, widest range).
      */
     //% block="set MLX90393 gain to %g"
     //% group="Settings" weight=50
@@ -383,7 +410,8 @@ namespace mlx90393 {
     }
 
     /**
-     * Set the ADC resolution for all axes. Each extra bit doubles the range per count.
+     * Set the output resolution for all axes. Each step up doubles the µT per count:
+     * 16 bit (default) gives the finest steps, 19 bit the coarsest steps but a wider range.
      */
     //% block="set MLX90393 resolution to %r"
     //% group="Settings" weight=49
@@ -393,8 +421,9 @@ namespace mlx90393 {
     }
 
     /**
-     * Set the digital filter (0-7). Higher values reduce noise and offset error but slow
-     * measurements. Low filter plus low oversampling is a prohibited mode on this sensor.
+     * Set the digital filter (0-7). Higher values reduce noise but slow measurements.
+     * The sensor does not permit filter 0 with oversampling 0 or 1, or filter 1 with
+     * oversampling 0; those are raised to the nearest permitted setting.
      */
     //% block="set MLX90393 digital filter to %f"
     //% f.min=0 f.max=7 f.defl=6
@@ -405,8 +434,10 @@ namespace mlx90393 {
     }
 
     /**
-     * Set the oversampling ratio (0-3). Higher values reduce noise and offset error but slow
-     * measurements. Low filter plus low oversampling is a prohibited mode on this sensor.
+     * Set the oversampling ratio (0-3: each conversion is repeated 1, 2, 4 or 8 times and
+     * averaged). Higher values reduce noise but slow measurements. The sensor does not
+     * permit filter 0 with oversampling 0 or 1, or filter 1 with oversampling 0; those are
+     * raised to the nearest permitted setting.
      */
     //% block="set MLX90393 oversampling to %o"
     //% o.min=0 o.max=3 o.defl=2
@@ -414,5 +445,24 @@ namespace mlx90393 {
     export function setOversampling(o: number) {
         osr = Math.constrain(o, 0, 3)
         applyReg2()
+    }
+
+    /**
+     * The digital filter setting actually in use (it can differ from what you asked for
+     * if that combination is not permitted).
+     */
+    //% block="MLX90393 digital filter setting"
+    //% group="Settings" weight=46 advanced=true
+    export function digitalFilter(): number {
+        return filt
+    }
+
+    /**
+     * The oversampling setting actually in use.
+     */
+    //% block="MLX90393 oversampling setting"
+    //% group="Settings" weight=45 advanced=true
+    export function oversamplingSetting(): number {
+        return osr
     }
 }
