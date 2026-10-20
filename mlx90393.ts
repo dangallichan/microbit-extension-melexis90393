@@ -77,6 +77,11 @@ namespace mlx90393 {
     let lastStatus = 0
     let measurementOk = false
 
+    // Calibration (in µT): corrected = (uncorrected - offset) * scale
+    let offsets = [0, 0, 0]
+    let scales = [1, 1, 1]
+    let calibrationSucceeded = false
+
     // ---------- low-level helpers ----------
 
     function send(bytes: number[], readLen: number): Buffer {
@@ -194,16 +199,22 @@ namespace mlx90393 {
         return measurementOk
     }
 
+    // Field in µT straight from the raw counts, before any calibration
+    function uncorrectedField(axis: number): number {
+        let counts = (1 << res)
+        if (axis == 0) return rawX * XY_SENS[gain] * counts
+        if (axis == 1) return rawY * XY_SENS[gain] * counts
+        return rawZ * Z_SENS[gain] * counts
+    }
+
     /**
      * Magnetic field along one axis from the last measurement, in microtesla (µT).
+     * Includes the offset and scale correction if you have calibrated.
      */
     //% block="MLX90393 field %axis (µT)"
     //% weight=80
     export function field(axis: MLXAxis): number {
-        let scale = (1 << res)
-        if (axis == MLXAxis.X) return rawX * XY_SENS[gain] * scale
-        if (axis == MLXAxis.Y) return rawY * XY_SENS[gain] * scale
-        return rawZ * Z_SENS[gain] * scale
+        return (uncorrectedField(axis) - offsets[axis]) * scales[axis]
     }
 
     /**
@@ -249,6 +260,114 @@ namespace mlx90393 {
         serial.writeValue("x", Math.round(field(MLXAxis.X) * 100) / 100)
         serial.writeValue("y", Math.round(field(MLXAxis.Y) * 100) / 100)
         serial.writeValue("z", Math.round(field(MLXAxis.Z) * 100) / 100)
+    }
+
+    // ---------- calibration ----------
+
+    /**
+     * Calibrate the offset and scale of each axis. While it runs, slowly rotate the
+     * sensor through as many orientations as you can (a figure-eight in the air works
+     * well), away from magnets, speakers and metal. The micro:bit shows a progress bar.
+     * Afterwards the field blocks return corrected values.
+     */
+    //% block="calibrate MLX90393 for %seconds s (rotate the sensor)"
+    //% seconds.defl=15 seconds.min=5 seconds.max=60
+    //% group="Calibration" weight=45
+    export function calibrate(seconds: number = 15) {
+        const MIN_RANGE_UT = 20      // axis must swing by at least this much to be trusted
+        const MIN_SAMPLES = 10
+        let minV = [1000000, 1000000, 1000000]
+        let maxV = [-1000000, -1000000, -1000000]
+        let samples = 0
+        let duration = Math.max(1, seconds) * 1000
+        let start = input.runningTime()
+
+        while (input.runningTime() - start < duration) {
+            measure()
+            if (measurementOk) {
+                for (let i = 0; i < 3; i++) {
+                    let v = uncorrectedField(i)
+                    if (v < minV[i]) minV[i] = v
+                    if (v > maxV[i]) maxV[i] = v
+                }
+                samples += 1
+            }
+            led.plotBarGraph(input.runningTime() - start, duration)
+        }
+        basic.clearScreen()
+
+        let ranges = [maxV[0] - minV[0], maxV[1] - minV[1], maxV[2] - minV[2]]
+        if (samples < MIN_SAMPLES || ranges[0] < MIN_RANGE_UT
+            || ranges[1] < MIN_RANGE_UT || ranges[2] < MIN_RANGE_UT) {
+            // not enough motion or data: leave the existing calibration untouched
+            calibrationSucceeded = false
+            return
+        }
+
+        let avgRange = (ranges[0] + ranges[1] + ranges[2]) / 3
+        for (let i = 0; i < 3; i++) {
+            offsets[i] = (maxV[i] + minV[i]) / 2
+            scales[i] = Math.constrain(avgRange / ranges[i], 0.5, 2)
+        }
+        calibrationSucceeded = true
+    }
+
+    /**
+     * True if the last calibration collected enough movement on all three axes.
+     * If false, the previous calibration (or none) is still in use.
+     */
+    //% block="MLX90393 calibration succeeded"
+    //% group="Calibration" weight=44
+    export function calibrationOk(): boolean {
+        return calibrationSucceeded
+    }
+
+    /**
+     * Remove any calibration (offsets back to 0, scales back to 1).
+     */
+    //% block="reset MLX90393 calibration"
+    //% group="Calibration" weight=43
+    export function resetCalibration() {
+        offsets = [0, 0, 0]
+        scales = [1, 1, 1]
+        calibrationSucceeded = false
+    }
+
+    /**
+     * Current calibration offset for one axis, in µT.
+     */
+    //% block="MLX90393 calibration offset %axis (µT)"
+    //% group="Calibration" weight=42 advanced=true
+    export function calibrationOffset(axis: MLXAxis): number {
+        return offsets[axis]
+    }
+
+    /**
+     * Current calibration scale factor for one axis (1 = no correction).
+     */
+    //% block="MLX90393 calibration scale %axis"
+    //% group="Calibration" weight=41 advanced=true
+    export function calibrationScale(axis: MLXAxis): number {
+        return scales[axis]
+    }
+
+    /**
+     * Set the calibration offsets (in µT), e.g. values from an earlier calibration.
+     */
+    //% block="set MLX90393 offsets x %x y %y z %z (µT)"
+    //% group="Calibration" weight=40 advanced=true
+    export function setOffsets(x: number, y: number, z: number) {
+        offsets = [x, y, z]
+    }
+
+    /**
+     * Set the calibration scale factors, e.g. values from an earlier calibration.
+     */
+    //% block="set MLX90393 scales x %x y %y z %z"
+    //% x.defl=1 y.defl=1 z.defl=1
+    //% group="Calibration" weight=39 advanced=true
+    export function setScales(x: number, y: number, z: number) {
+        scales = [x, y, z]
     }
 
     // ---------- settings ----------

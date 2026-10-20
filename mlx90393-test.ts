@@ -1,16 +1,22 @@
 // code generated for D. Gallichan by Claude, date: 20/10/26
 // MLX90393 extension test program (micro:bit, MakeCode)
 //
-// Controls:   A = next gain      B = next resolution
-//             A+B = next digital filter      Shake = next oversampling
+// On start-up it calibrates (if CALIBRATE_ON_START is true): after a 3 s countdown,
+// slowly rotate the sensor through all orientations until the progress bar fills.
+//
+// Controls:   A = next gain          B = next resolution
+//             A+B = recalibrate      touch P1 (and hold GND) = next digital filter
+//             touch P2 (and hold GND) = next oversampling
 //
 // Serial output (open "Show console Device"):
 //   x, y, z  field in µT (plotted)        b  total field strength in µT (plotted)
-//   lines starting with "#" are status messages (setting changes, temperature)
+//   lines starting with "#" are status messages (settings, calibration, temperature)
 
 const ADDRESS = MLXAddress.Addr0C   // change if you've moved the A0/A1 solder jumpers
 const PLOT_RAW = false              // true = also plot raw counts for X, Y, Z
 const SAMPLE_PAUSE_MS = 50
+const CALIBRATE_ON_START = true
+const CALIBRATION_SECONDS = 15
 
 const GAIN_NAMES = ["5x", "4x", "3x", "2.5x", "2x", "1.67x", "1.33x", "1x"]
 const RES_NAMES = ["16 bit", "17 bit", "18 bit", "19 bit"]
@@ -20,6 +26,8 @@ let resIdx = 0         // 16 bit
 let filterIdx = 6      // matches the extension defaults (filter 0 + OSR 0 is a prohibited mode)
 let osrIdx = 2
 let settingsChanged = false
+let calibrateRequested = CALIBRATE_ON_START
+let busy = false       // true while calibrating: ignore buttons and touches
 let sampleCount = 0
 
 function round2(v: number): number {
@@ -40,25 +48,65 @@ function applySettings() {
     settingsChanged = false
 }
 
+function runCalibration() {
+    busy = true
+    serial.writeLine("# calibrating in 3 s: rotate the sensor slowly through all orientations")
+    for (let i = 3; i > 0; i--) {
+        basic.showNumber(i)
+        basic.pause(300)
+    }
+    basic.clearScreen()
+    mlx90393.calibrate(CALIBRATION_SECONDS)
+    if (mlx90393.calibrationOk()) {
+        serial.writeLine("# calibration done")
+        // copy these two lines into your own program to reuse the calibration
+        serial.writeLine("mlx90393.setOffsets("
+            + round2(mlx90393.calibrationOffset(MLXAxis.X)) + ", "
+            + round2(mlx90393.calibrationOffset(MLXAxis.Y)) + ", "
+            + round2(mlx90393.calibrationOffset(MLXAxis.Z)) + ")")
+        serial.writeLine("mlx90393.setScales("
+            + round2(mlx90393.calibrationScale(MLXAxis.X)) + ", "
+            + round2(mlx90393.calibrationScale(MLXAxis.Y)) + ", "
+            + round2(mlx90393.calibrationScale(MLXAxis.Z)) + ")")
+        basic.showIcon(IconNames.Yes)
+    } else {
+        serial.writeLine("# calibration FAILED: not enough movement on every axis, try again")
+        basic.showIcon(IconNames.No)
+    }
+    basic.pause(800)
+    basic.clearScreen()
+    calibrateRequested = false
+    busy = false
+}
+
 input.onButtonPressed(Button.A, function () {
+    if (busy) return
     gainIdx = (gainIdx + 1) % 8
     settingsChanged = true
     basic.showNumber(gainIdx)
 })
 
 input.onButtonPressed(Button.B, function () {
+    if (busy) return
     resIdx = (resIdx + 1) % 4
     settingsChanged = true
     basic.showNumber(resIdx)
 })
 
 input.onButtonPressed(Button.AB, function () {
+    if (busy) return
+    calibrateRequested = true
+})
+
+input.onPinPressed(TouchPin.P1, function () {
+    if (busy) return
     filterIdx = (filterIdx + 1) % 8
     settingsChanged = true
     basic.showNumber(filterIdx)
 })
 
-input.onGesture(Gesture.Shake, function () {
+input.onPinPressed(TouchPin.P2, function () {
+    if (busy) return
     osrIdx = (osrIdx + 1) % 4
     settingsChanged = true
     basic.showNumber(osrIdx)
@@ -76,11 +124,14 @@ if (mlx90393.connected()) {
 }
 basic.pause(800)
 basic.clearScreen()
-serial.writeLine("# A = gain, B = resolution, A+B = filter, shake = oversampling")
+serial.writeLine("# A = gain, B = resolution, A+B = recalibrate, P1 = filter, P2 = oversampling")
 
 // ---------- main loop ----------
 
 basic.forever(function () {
+    if (calibrateRequested) {
+        runCalibration()
+    }
     if (settingsChanged) {
         applySettings()
     }
@@ -88,7 +139,7 @@ basic.forever(function () {
     mlx90393.measure()
 
     if (mlx90393.lastMeasurementOk()) {
-        mlx90393.plotToSerial()                                   // x, y, z in µT
+        mlx90393.plotToSerial()                                   // x, y, z in µT (calibrated)
         serial.writeValue("b", round2(mlx90393.magnitude()))      // |B| in µT
         if (PLOT_RAW) {
             serial.writeValue("rawx", mlx90393.raw(MLXAxis.X))

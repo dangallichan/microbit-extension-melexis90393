@@ -1,6 +1,6 @@
 {
     "name": "mlx90393",
-    "version": "0.1.1",
+    "version": "0.2.0",
     "description": "Melexis MLX90393 3-axis magnetometer (SparkFun Qwiic) over I2C",
     "license": "MIT",
     "dependencies": {
