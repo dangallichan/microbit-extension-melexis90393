@@ -2,7 +2,7 @@
 
 MakeCode extension for the Melexis MLX90393 3-axis magnetometer, e.g. the SparkFun Qwiic breakout, on the BBC micro:bit.
 
-Built by Claude for D.Gallichan, 20/10/26
+Built by Claude for D.Gallichan, 20/10/26 - hence not fully validated!
 
 ## Wiring
 
