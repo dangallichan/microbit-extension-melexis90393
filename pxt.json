@@ -7,7 +7,7 @@
         "core": "*"
     },
     "files": [
-        "README.md",
+        "readme.md",
         "mlx90393.ts"
     ],
     "testFiles": [
