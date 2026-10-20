@@ -63,8 +63,12 @@ namespace mlx90393 {
     let addr = 0x0C
     let gain = 7
     let res = 0
-    let filt = 0
-    let osr = 0
+    // The chip's reset values (DIG_FILT = 0, OSR = 0) are a prohibited mode when
+    // HALLCONF = 0xC (datasheet Table 1): the conversion is too short for the hall-plate
+    // spinning to cancel the offset, which gives a large baseline error.
+    // Defaults here match the ESPHome driver (Adafruit uses filter 7 / OSR 3).
+    let filt = 6
+    let osr = 2
 
     let rawX = 0
     let rawY = 0
@@ -131,8 +135,8 @@ namespace mlx90393 {
     // ---------- blocks ----------
 
     /**
-     * Reset the sensor and set default settings (1x gain, 16 bit, no filtering).
-     * Run this once at the start of your program.
+     * Reset the sensor and set default settings (1x gain, 16 bit, digital filter 6,
+     * oversampling 2). Run this once at the start of your program.
      */
     //% block="initialise MLX90393 at address %address"
     //% weight=100
@@ -140,8 +144,8 @@ namespace mlx90393 {
         addr = address
         gain = 7
         res = 0
-        filt = 0
-        osr = 0
+        filt = 6
+        osr = 2
         command(0x80)       // EX: exit any mode
         basic.pause(5)
         command(0xF0)       // RT: reset
@@ -270,10 +274,11 @@ namespace mlx90393 {
     }
 
     /**
-     * Set the digital filter (0-7). Higher values reduce noise but slow measurements.
+     * Set the digital filter (0-7). Higher values reduce noise and offset error but slow
+     * measurements. Low filter plus low oversampling is a prohibited mode on this sensor.
      */
     //% block="set MLX90393 digital filter to %f"
-    //% f.min=0 f.max=7 f.defl=0
+    //% f.min=0 f.max=7 f.defl=6
     //% group="Settings" weight=48
     export function setFilter(f: number) {
         filt = Math.constrain(f, 0, 7)
@@ -281,10 +286,11 @@ namespace mlx90393 {
     }
 
     /**
-     * Set the oversampling ratio (0-3). Higher values reduce noise but slow measurements.
+     * Set the oversampling ratio (0-3). Higher values reduce noise and offset error but slow
+     * measurements. Low filter plus low oversampling is a prohibited mode on this sensor.
      */
     //% block="set MLX90393 oversampling to %o"
-    //% o.min=0 o.max=3 o.defl=0
+    //% o.min=0 o.max=3 o.defl=2
     //% group="Settings" weight=47
     export function setOversampling(o: number) {
         osr = Math.constrain(o, 0, 3)
